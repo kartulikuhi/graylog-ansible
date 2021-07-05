@@ -1,3 +1,4 @@
+#Installation script for graylog 3.3, including a method for creating an input automatically.
 - hosts: graylog
   become: yes
   become_user: root
