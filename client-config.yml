@@ -1,0 +1,15 @@
+#changing all hosts configs to send logs to your syslog server.
+- hosts: all
+  become: yes
+  become_user: root
+  vars_prompt:
+    - name: "ip"
+      prompt: "Enter syslog server IP"
+      private: no
+  tasks:
+    - name: modify rsyslog config
+      lineinfile:
+        path: /etc/rsyslog.conf
+        line: "*.* @@{{ ip }}:1514"
+    - name: restart rsyslog
+      systemd: state=restarted name=rsyslog
