@@ -1,20 +1,19 @@
 - hosts: graylog
-  connection: local
   become: yes
   become_user: root
   vars_prompt:
     - name: "password"
       prompt: "Enter 'admin' user password"
       private: yes
-      default: graylog
-    - name: "gl_ip"
-      prompt: "IP for graylog server? (defaults to system IP)"
-      private: no
+      default: "graylog"
     - name: "es_memory"
       prompt: "Change memory committed to elasticsearch process (in MBs)"
       private: no
-    - name: "gl_memory"
-      prompt: "Change memory committed to graylog process (in MBs)"
+    - name: "public_ip"
+      prompt: "What's the public IP of the server"
+      private: no
+    - name: "private_ip"
+      prompt: "What's the local IP of the server"
       private: no
   tasks:
   - name: "Install requirement - apt-transport-https"
@@ -41,26 +40,15 @@
       update_cache: true
       state: present
 
-  - name: "Mongodb - Add repo key"
-    apt_key:
-      keyserver: hkp://keyserver.ubuntu.com:80
-      id: 2930ADAE8CAF5059EE73BB4B58712A2291FA4AD5
-      state: present
-
-  - name: "Mongodb - Add repo"
-    apt_repository:
-      repo: deb https://repo.mongodb.org/apt/ubuntu xenial/mongodb-org/3.6 multiverse
-      state: present
-
   - name: "Mongodb - Install package"
     apt:
-      name: "mongodb-org"
+      name: "mongodb"
       update_cache: true
       state: present
 
   - name: "Mongodb - Configure mongodb service"
     service:
-      name: "mongod"
+      name: "mongodb"
       enabled: yes
       state: started
 
@@ -71,56 +59,50 @@
 
   - name: "Elasticsearch - Add repo"
     apt_repository:
-      repo: deb https://artifacts.elastic.co/packages/5.x/apt stable main
+      repo: deb https://artifacts.elastic.co/packages/7.x/apt stable main
       state: present
 
   - name: "Elasticsearch - Install package"
     apt:
-      name: "elasticsearch"
+      update_cache: yes
+
+  - name: "Elasticsearch - Install package"
+    apt:
+      name: "elasticsearch-oss"
       update_cache: true
       state: present
-    notify:
-     - Elasticsearch - restart service
 
   - name: "Elasticsearch - Configure java path"
     replace:
       path: /etc/default/elasticsearch
       regexp: JAVA_HOME=$
       replace: JAVA_HOME=/usr/lib/jvm/java-8-openjdk-amd64/jre/bin/java
-    notify:
-     - Elasticsearch - restart service
 
   - name: "Elasticsearch - Configure initial heap size "
     when: es_memory is defined
     lineinfile:
       path: /etc/elasticsearch/jvm.options
-      regexp: '(?!.*-Xms{{ es_memory }}m)^-Xms\d+?[gm]'
-      line: "-Xms{{ es_memory }}m"
+      regexp: '.*-Xms.*\n'
+      line: "-Xms{{ es_memory }}m\n"
       state: present
-    notify:
-     - Elasticsearch - restart service
 
   - name: "Elasticsearch - Configure maximum heap size "
     when: es_memory is defined
     lineinfile:
       path: /etc/elasticsearch/jvm.options
-      regexp: '(?!.*-Xmx{{ es_memory }}m)^-Xmx\d+?[gm]'
-      line: "-Xmx{{ es_memory }}m"
+      regexp: '.*-Xmx.*\n'
+      line: "-Xmx{{ es_memory }}m\n"
       state: present
-    notify:
-     - Elasticsearch - restart service
 
   - name: "Elasticsearch - Configure service"
     service:
       name: "elasticsearch"
       enabled: yes
       state: started
-    notify:
-     - Elasticsearch - restart service
 
   - name: "Graylog - Get package"
     apt:
-      deb: https://packages.graylog2.org/repo/packages/graylog-2.4-repository_latest.deb
+      deb: https://packages.graylog2.org/repo/packages/graylog-3.3-repository_latest.deb
       update_cache: true
       state: present
 
@@ -129,84 +111,64 @@
       update_cache: true
       name: "graylog-server"
       state: present
-    notify:
-     - Graylog - restart service
 
   - name: "Graylog - Generate password secret"
     command: pwgen -N 1 -s 96
     register: password_secret
-
-  - name: "Graylog - Generate admin password hash"
-    shell: "{{ password }} | shasum -a 256"
-    register: sha_password
 
   - name: "Graylog - Configure password secret"
     replace:
       path: /etc/graylog/server/server.conf
       regexp: ^password_secret =$
       replace: "password_secret = {{ password_secret.stdout }}"
-    notify:
-     - Graylog - restart service
 
   - name: "Graylog - Configure admin password hash"
     replace:
       path: /etc/graylog/server/server.conf
-      regexp: "(?!.*{{ sha_password.stdout.split(' ')[0] }})^root_password_sha2 .+$"
-      replace: "root_password_sha2 = {{ sha_password.stdout.split(' ')[0] }}"
-    notify:
-     - Graylog - restart service
+      regexp: ".*root_password_sha2 =.*\n"
+      replace: "root_password_sha2 = {{ password | hash('sha256') }} \n"
 
   - name: "Graylog - Configure rest_listen_uri"
     replace:
       path: /etc/graylog/server/server.conf
-      regexp: "^(?!.*{% if gl_ip %}{{ gl_ip }}{% else %}{{ ansible_default_ipv4.address }}{% endif %})^rest_listen_uri =.+$"
-      replace: "rest_listen_uri = http://{% if gl_ip %}{{ gl_ip }}{% else %}{{ ansible_default_ipv4.address }}{% endif %}:9000/api/"
-    notify:
-     - Graylog - restart service
+      regexp: ".*http_bind_address =.*\n"
+      replace: "http_bind_address = {{ private_ip }}:9000 \n"
+
+  - name: "Graylog - Enable cors"
+    replace:
+      path: /etc/graylog/server/server.conf
+      regexp: ".*http_enable_cors =.*\n"
+      replace: "http_enable_cors = true \n"
 
   - name: "Graylog - Configure web_listen_uri"
     replace:
       path: /etc/graylog/server/server.conf
-      regexp: "^(?!.*{% if gl_ip %}{{ gl_ip }}{% else %}{{ ansible_default_ipv4.address }}{% endif %})^web_listen_uri =.+$"
-      replace: "web_listen_uri = http://{% if gl_ip %}{{ gl_ip }}{% else %}{{ ansible_default_ipv4.address }}{% endif %}:9000/api/"
-    notify:
-     - Graylog - restart service
-
-  - name: "Graylog - Configure initial memory"
-    when: gl_memory is defined
-    replace:
-      path: /etc/default/graylog-server
-      regexp: '(?!.*-Xms{{ gl_memory }}m)-Xms\d+?[gm]'
-      replace: "-Xms{{ gl_memory }}m"
-    notify:
-     - Graylog - restart service
-
-  - name: "Graylog - Configure maximum memory"
-    when: gl_memory is defined
-    replace:
-      path: /etc/default/graylog-server
-      regexp: '(?!.*-Xmx{{ gl_memory }}m)-Xmx\d+?[gm]'
-      replace: "-Xms{{ gl_memory }}m"
-    notify:
-     - Graylog - restart service
+      regexp: ".*http_external_uri =.*\n"
+      replace: "http_external_uri = http://{{ public_ip }}:9000/ \n"
 
   - name: "Graylog - Configure service"
     service:
       name: "graylog-server"
       enabled: yes
       state: started
-    notify:
-     - Graylog - restart service
 
-  handlers:
-  - name: "Elasticsearch - Restart service"
-    service:
-      name: "elasticsearch"
-      state: restarted
+  - name: "wait for some time(just in case)"
+    pause:
+      minutes: 2
 
-  - name: "Graylog - Restart service"
-    service:
-      name: "graylog-server"
-      state: restarted
+#makes an POST request for graylog server
+  - name: "create input method" 
+    uri:
+      url: "http://{{ private_ip }}:9000/api/system/inputs"
+      method: POST
+      url_username: "admin"
+      url_password: "{{ password }}"
+      return_content: yes
+      headers:
+        Accept: "application/json"
+        X-Requested-By: "Graylog API Browser"
+      body_format: "json"
+      body: { "title":"TCP monitoring", "type":"org.graylog2.inputs.syslog.tcp.SyslogTCPInput", "global":true, "configuration":{ "recv_buffer_size": 1048576, "tcp_keepalive": false, "use_null_delimiter": false, "number_worker_threads": 2, "tls_client_auth_cert_file": "", "force_rdns": false, "bind_address": "0.0.0.0", "tls_cert_file": "", "store_full_message": false, "expand_structured_data": false, "port": 1514, "tls_key_file": "", "tls_enable": false, "tls_key_password": "", "max_message_size": 2097152, "tls_client_auth": "disabled", "override_source": null, "allow_override_date": true }}
+      status_code: 201
 
 
